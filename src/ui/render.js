@@ -266,7 +266,7 @@ function drawDeformed(content, view, model, results, scaleFactor, maxAbs) {
     title.textContent = ef
       ? (typeof ef.axialStress === 'number'
         ? `${e.id}: axialForce=${formatLabel(ef.axialForce)} N, axialStress=${formatLabel(ef.axialStress)} Pa`
-        : `${e.id}: axialForceI=${formatLabel(ef.axialForceI)} N, shearI=${formatLabel(ef.shearI)} N, momentI=${formatLabel(ef.momentI)} N·m, shearJ=${formatLabel(ef.shearJ)} N, momentJ=${formatLabel(ef.momentJ)} N·m`)
+        : `${e.id}: axialForceI=${formatLabel(ef.axialForceI)} N, axialForceJ=${formatLabel(ef.axialForceJ)} N, shearI=${formatLabel(ef.shearI)} N, momentI=${formatLabel(ef.momentI)} N·m, shearJ=${formatLabel(ef.shearJ)} N, momentJ=${formatLabel(ef.momentJ)} N·m`)
       : `${e.id}: no elementForces in results`;
     shape.appendChild(title);
     g.appendChild(shape);
