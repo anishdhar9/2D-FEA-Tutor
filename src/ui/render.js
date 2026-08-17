@@ -320,8 +320,6 @@ function drawAppliedLoads(content, view, model) {
 function drawReactions(content, view, model, results) {
   const g = createSvgEl('g', { class: 'reactions' });
   const arrowLen = 40;
-  let maxMz = 0;
-  for (const r of results.reactions || []) maxMz = Math.max(maxMz, Math.abs(r.mz || 0));
 
   for (const r of results.reactions || []) {
     const n = nodeById(model, r.node);
