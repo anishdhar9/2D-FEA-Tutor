@@ -1,0 +1,10 @@
+{
+  "name": "2d-fea-tutor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Client-side 2D FEA teaching tool (truss + beam, direct stiffness method)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

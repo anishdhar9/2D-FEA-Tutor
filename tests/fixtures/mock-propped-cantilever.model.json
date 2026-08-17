@@ -1,0 +1,20 @@
+{
+  "meta": { "units": "SI" },
+  "nodes": [
+    { "id": "A", "x": 0.0, "y": 0.0 },
+    { "id": "B", "x": 4.0, "y": 0.0 }
+  ],
+  "elements": [
+    { "id": "e1", "type": "beam", "nodeI": "A", "nodeJ": "B", "E": 2.0e11, "A": 5.0e-4, "I": 8.0e-6 }
+  ],
+  "supports": [
+    { "node": "A", "ux": true, "uy": true, "rz": true },
+    { "node": "B", "ux": false, "uy": true, "rz": false }
+  ],
+  "loads": {
+    "nodal": [],
+    "distributed": [
+      { "element": "e1", "wy": -10000.0 }
+    ]
+  }
+}

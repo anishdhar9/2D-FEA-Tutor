@@ -1,0 +1,383 @@
+<title>2D FEA Tutor</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #f8fafc;
+    --panel-bg: #ffffff;
+    --border: #e2e8f0;
+    --text: #1e293b;
+    --muted: #64748b;
+    --accent: #0f766e;
+    --accent-2: #38bdf8;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 10px 16px;
+    background: #0f172a;
+    color: white;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .subtitle { font-size: 12px; color: #94a3b8; }
+  nav.tabs { display: flex; gap: 4px; margin-left: auto; }
+  nav.tabs button {
+    background: transparent;
+    border: 1px solid #334155;
+    color: #cbd5e1;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  nav.tabs button.active { background: var(--accent-2); color: #0f172a; border-color: var(--accent-2); font-weight: 600; }
+
+  main { flex: 1; min-height: 0; display: flex; }
+  section.view { flex: 1; min-height: 0; display: none; flex-direction: column; }
+  section.view.active { display: flex; }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .toolbar button, .toolbar select {
+    font-size: 13px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #f1f5f9;
+    cursor: pointer;
+  }
+  .toolbar button.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .hint { font-size: 12px; color: var(--muted); }
+  .toolbar label.slider-label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+
+  .split { flex: 1; min-height: 0; display: flex; }
+  .canvas-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    background:
+      linear-gradient(#eef2f7 1px, transparent 1px),
+      linear-gradient(90deg, #eef2f7 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-color: #fbfcfe;
+  }
+  svg { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+
+  aside.side-panel {
+    width: 320px;
+    flex-shrink: 0;
+    background: var(--panel-bg);
+    border-left: 1px solid var(--border);
+    padding: 12px;
+    overflow-y: auto;
+    font-size: 13px;
+  }
+  aside.side-panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 8px; }
+  .solve-btn {
+    width: 100%; padding: 10px; margin-bottom: 10px; border-radius: 6px; border: none;
+    background: var(--accent); color: white; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .solve-btn:hover { background: #0d5f58; }
+  .solve-error {
+    margin-bottom: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+    background: #fef2f2; color: #b91c1c; border: 1px solid #fca5a5; white-space: pre-wrap;
+  }
+  .results-error { margin: 10px 12px 0; }
+  aside.side-panel pre {
+    background: #0f172a;
+    color: #a7f3d0;
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    overflow: auto;
+    max-height: 260px;
+    margin: 0;
+  }
+
+  #inspector-popover {
+    position: absolute;
+    z-index: 20;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+    padding: 10px 12px;
+    width: 250px;
+    font-size: 12px;
+    /* Only the interactive controls should capture clicks — the panel's
+       background/whitespace lets clicks fall through to the canvas beneath,
+       so an open popover for one node can't block clicking a different
+       node/element that happens to render underneath it (common in compact
+       models where nodes sit closer together than the popover is wide). */
+    pointer-events: none;
+  }
+  #inspector-popover input, #inspector-popover select, #inspector-popover button, #inspector-popover label {
+    pointer-events: auto;
+  }
+  #inspector-popover[hidden] { display: none; }
+  .fea-pop-title { font-weight: 700; margin-bottom: 8px; color: var(--text); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .fea-pop-close {
+    pointer-events: auto; cursor: pointer; border: none; background: transparent; color: var(--muted);
+    font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+  }
+  .fea-pop-close:hover { background: #f1f5f9; color: var(--text); }
+  .fea-subtitle { font-weight: 600; color: var(--muted); margin: 8px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .fea-section { border-top: 1px dashed var(--border); padding-top: 6px; margin-top: 6px; }
+  .fea-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .fea-field { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 64px; font-size: 11px; color: var(--muted); }
+  .fea-field input, .fea-field select { font-size: 12px; padding: 4px 5px; border: 1px solid var(--border); border-radius: 4px; width: 100%; }
+  .fea-radio-group { display: flex; gap: 8px; flex-wrap: wrap; }
+  .fea-radio-group label { display: flex; align-items: center; gap: 3px; font-size: 12px; }
+  .fea-delete-btn {
+    margin-top: 10px; width: 100%; padding: 6px; border-radius: 6px; border: 1px solid #fca5a5;
+    background: #fef2f2; color: #b91c1c; cursor: pointer; font-size: 12px;
+  }
+
+  .results-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; padding: 12px; }
+  .results-tables h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  /* Element forces has up to 8 columns (truss + beam shapes combined) and can
+     be wider than its grid cell — scroll horizontally within its own box
+     rather than clipping at the page edge or forcing the whole grid to scroll. */
+  .results-tables .table-scroll { overflow-x: auto; max-width: 100%; }
+  table.fea-results-table { border-collapse: collapse; width: 100%; min-width: max-content; font-size: 12px; background: white; }
+  table.fea-results-table th, table.fea-results-table td {
+    border: 1px solid var(--border); padding: 5px 8px; text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.fea-results-table th:first-child, table.fea-results-table td:first-child { text-align: left; }
+  table.fea-results-table th { background: #f1f5f9; }
+  .fea-empty-row { text-align: center !important; color: var(--muted); }
+
+  .legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--muted); }
+  .legend .swatch { display: inline-block; width: 14px; height: 4px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+</style>
+
+<header>
+  <div>
+    <h1>2D FEA Tutor</h1>
+    <div class="subtitle">2D direct-stiffness solver (truss + beam) with a live SVG model builder</div>
+  </div>
+  <nav class="tabs">
+    <button id="tab-builder-btn" class="active" type="button">Model Builder</button>
+    <button id="tab-results-btn" type="button">Results Viewer</button>
+  </nav>
+</header>
+
+<main>
+  <section id="view-builder" class="view active">
+    <div class="toolbar">
+      <button id="connect-toggle-btn" type="button">Connect Mode: OFF</button>
+      <button id="fit-view-btn" type="button">Fit View</button>
+      <button id="zoom-in-btn" type="button">Zoom +</button>
+      <button id="zoom-out-btn" type="button">Zoom −</button>
+      <button id="clear-btn" type="button">Clear All</button>
+      <span class="spacer"></span>
+      <span class="hint" id="hint">Click empty canvas to add a node.</span>
+    </div>
+    <div class="split">
+      <div class="canvas-wrap" id="canvas-wrap">
+        <svg id="canvas"></svg>
+        <div id="inspector-popover" hidden></div>
+      </div>
+      <aside class="side-panel">
+        <button id="solve-btn" type="button" class="solve-btn">Solve ▸</button>
+        <div id="solve-error" class="solve-error" hidden></div>
+        <h2>Model JSON (getModel())</h2>
+        <pre id="model-json-preview">{}</pre>
+      </aside>
+    </div>
+  </section>
+
+  <section id="view-results" class="view">
+    <div class="toolbar">
+      <label class="slider-label">
+        Fixture:
+        <select id="fixture-select">
+          <option value="current">Current model (live solve)</option>
+          <option value="triangle">Triangle truss (Phase 1 benchmark)</option>
+          <option value="cantilever">Propped cantilever (Phase 2 benchmark)</option>
+        </select>
+      </label>
+      <label class="slider-label">
+        Deformation scale ×<span id="scale-readout">1</span>
+        <input type="range" id="scale-slider" min="0" max="200" value="50" />
+      </label>
+      <span class="spacer"></span>
+      <div class="legend">
+        <span><span class="swatch" style="background:#2563eb"></span>Tension</span>
+        <span><span class="swatch" style="background:#dc2626"></span>Compression</span>
+        <span><span class="swatch" style="background:#15803d"></span>Reaction</span>
+        <span><span class="swatch" style="background:#9333ea"></span>Moment reaction</span>
+      </div>
+    </div>
+    <div id="results-error" class="solve-error results-error" hidden></div>
+    <div class="split">
+      <div class="canvas-wrap" id="results-canvas-wrap">
+        <svg id="results-canvas"></svg>
+      </div>
+    </div>
+    <div class="results-tables">
+      <div>
+        <h3>Displacements</h3>
+        <div id="disp-table" class="table-scroll"></div>
+      </div>
+      <div>
+        <h3>Reactions</h3>
+        <div id="reaction-table" class="table-scroll"></div>
+      </div>
+      <div>
+        <h3>Element forces</h3>
+        <div id="force-table" class="table-scroll"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+  import { initCanvas, getModel } from './src/ui/canvas.js';
+  import { renderResults, computeDefaultScaleFactor } from './src/ui/render.js';
+  import { renderAllTables } from './src/ui/results-panel.js';
+  import { solveModel } from './src/solver/index.js';
+
+  // ---- tabs ----
+  const tabBuilderBtn = document.getElementById('tab-builder-btn');
+  const tabResultsBtn = document.getElementById('tab-results-btn');
+  const viewBuilder = document.getElementById('view-builder');
+  const viewResults = document.getElementById('view-results');
+
+  function activateTab(name) {
+    const isBuilder = name === 'builder';
+    tabBuilderBtn.classList.toggle('active', isBuilder);
+    tabResultsBtn.classList.toggle('active', !isBuilder);
+    viewBuilder.classList.toggle('active', isBuilder);
+    viewResults.classList.toggle('active', !isBuilder);
+    if (!isBuilder) refreshResultsView();
+  }
+  tabBuilderBtn.addEventListener('click', () => activateTab('builder'));
+  tabResultsBtn.addEventListener('click', () => activateTab('results'));
+
+  // ---- builder ----
+  const modelJsonPreview = document.getElementById('model-json-preview');
+  const solveErrorEl = document.getElementById('solve-error');
+  const solveBtn = document.getElementById('solve-btn');
+  solveBtn.addEventListener('click', () => {
+    solveErrorEl.hidden = true;
+    fixtureSelect.value = 'current';
+    activateTab('results');
+  });
+  initCanvas({
+    svg: document.getElementById('canvas'),
+    canvasWrap: document.getElementById('canvas-wrap'),
+    popover: document.getElementById('inspector-popover'),
+    connectToggleBtn: document.getElementById('connect-toggle-btn'),
+    fitViewBtn: document.getElementById('fit-view-btn'),
+    zoomInBtn: document.getElementById('zoom-in-btn'),
+    zoomOutBtn: document.getElementById('zoom-out-btn'),
+    clearBtn: document.getElementById('clear-btn'),
+    hintEl: document.getElementById('hint'),
+    onChange: (model) => {
+      modelJsonPreview.textContent = JSON.stringify(model, null, 2);
+    },
+  });
+
+  // ---- results viewer ----
+  // Track D integration: every option here runs a Model JSON through the
+  // real solveModel() (src/solver/index.js) rather than reading a canned
+  // mock Results JSON. "Current model" solves whatever getModel() returns
+  // right now; the two benchmark options solve Track C's ground-truth
+  // fixtures (tests/fixtures/*.model.json) fresh each time too — the whole
+  // point is exercising the real model -> solveModel() -> render pipeline,
+  // not eyeballing pre-computed numbers.
+  const BENCHMARK_MODELS = {
+    triangle: 'tests/fixtures/truss-triangle.model.json',
+    cantilever: 'tests/fixtures/propped-cantilever.model.json',
+  };
+
+  const fixtureSelect = document.getElementById('fixture-select');
+  const scaleSlider = document.getElementById('scale-slider');
+  const scaleReadout = document.getElementById('scale-readout');
+  const resultsSvg = document.getElementById('results-canvas');
+  const resultsErrorEl = document.getElementById('results-error');
+
+  const benchmarkModelCache = {};
+  let currentModel = null;
+  let currentResults = null;
+  let defaultScale = 1;
+
+  async function getModelForSelection(name) {
+    if (name === 'current') return getModel();
+    if (!benchmarkModelCache[name]) {
+      benchmarkModelCache[name] = await fetch(BENCHMARK_MODELS[name]).then((r) => r.json());
+    }
+    return benchmarkModelCache[name];
+  }
+
+  function drawResults() {
+    if (!currentModel || !currentResults) return;
+    const scaleFactor = defaultScale * (Number(scaleSlider.value) / 50);
+    // Tables first: the results-tables panel sits below the canvas in a flex
+    // column, so its rendered row count changes how much vertical space is
+    // left for the canvas above it. Populating tables *before* renderResults
+    // reads the canvas's clientHeight means that read reflects the layout's
+    // final, settled size — reading it first (against stale/empty tables)
+    // would fit the SVG to a too-tall canvas that then shrinks underneath it.
+    renderAllTables({
+      displacementsEl: document.getElementById('disp-table'),
+      reactionsEl: document.getElementById('reaction-table'),
+      elementForcesEl: document.getElementById('force-table'),
+    }, currentResults);
+    renderResults({ svg: resultsSvg, model: currentModel, results: currentResults, scaleFactor });
+    scaleReadout.textContent = scaleFactor.toFixed(1);
+  }
+
+  // A model with no nodes/elements, an isolated node, or a mechanism (fewer
+  // constraints than DOF) throws a descriptive Error out of solveModel()
+  // (see src/solver/mat.js's singular-system check) rather than returning
+  // NaN — surface that message directly instead of letting it become an
+  // uncaught exception / blank page.
+  async function refreshResultsView() {
+    resultsErrorEl.hidden = true;
+    resultsSvg.replaceChildren();
+    try {
+      const model = await getModelForSelection(fixtureSelect.value);
+      const results = solveModel(model);
+      currentModel = model;
+      currentResults = results;
+      defaultScale = computeDefaultScaleFactor(model, results);
+      drawResults();
+    } catch (err) {
+      currentModel = null;
+      currentResults = null;
+      resultsErrorEl.textContent = `Could not solve this model: ${err.message}`;
+      resultsErrorEl.hidden = false;
+      renderAllTables({
+        displacementsEl: document.getElementById('disp-table'),
+        reactionsEl: document.getElementById('reaction-table'),
+        elementForcesEl: document.getElementById('force-table'),
+      }, {});
+    }
+  }
+
+  fixtureSelect.addEventListener('change', refreshResultsView);
+  scaleSlider.addEventListener('input', drawResults);
+  window.addEventListener('resize', () => { if (viewResults.classList.contains('active')) drawResults(); });
+</script>
