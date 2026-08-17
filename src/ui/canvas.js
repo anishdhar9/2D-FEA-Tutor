@@ -139,7 +139,13 @@ export function formatLabel(v, maxDp = 3) {
   if (!Number.isFinite(v)) return String(v);
   if (v === 0) return '0';
   const abs = Math.abs(v);
-  if (abs >= 1000 || abs < 0.001) return v.toExponential(2);
+  // Loads/reactions/stresses in this domain routinely run into the tens or
+  // hundreds of thousands (N, Pa) — that's completely ordinary, not a value
+  // worth switching to scientific notation for. Only genuinely huge (>=1e6,
+  // e.g. raw Pa stress values) or genuinely tiny (<1e-3, e.g. small rotations)
+  // magnitudes get the exponential form; everything in between reads as a
+  // plain number the way a student would write it by hand.
+  if (abs >= 1e6 || abs < 1e-3) return v.toExponential(2);
   return String(Math.round(v * 10 ** maxDp) / 10 ** maxDp);
 }
 
@@ -443,8 +449,19 @@ function onPointerUp(evt) {
   pointerDown = null;
   if (wasDrag) return; // it was a pan, not a click
 
-  const nodeTarget = evt.target.closest?.('[data-node-id]');
-  const elTarget = !nodeTarget && evt.target.closest?.('[data-element-id]');
+  // NOTE: deliberately NOT using evt.target here. onPointerDown calls
+  // setPointerCapture on the svg so drag-to-pan keeps receiving move/up
+  // events even if the cursor leaves the SVG mid-drag — but per the Pointer
+  // Events spec, once an element captures a pointer, evt.target on ALL
+  // subsequent events for that pointer (including this pointerup) is
+  // redirected to the CAPTURING element itself, not whatever is visually
+  // under the cursor. Using evt.target.closest(...) here would silently
+  // never match any node/element (svg has no data-node-id ancestor), making
+  // every click fall through to "empty canvas". elementFromPoint gives the
+  // real hit-tested element regardless of capture.
+  const hit = document.elementFromPoint(evt.clientX, evt.clientY);
+  const nodeTarget = hit && hit.closest && hit.closest('[data-node-id]');
+  const elTarget = !nodeTarget && hit && hit.closest && hit.closest('[data-element-id]');
 
   if (nodeTarget) {
     handleNodeClick(nodeTarget.getAttribute('data-node-id'));
@@ -525,9 +542,7 @@ function onKeyDown(evt) {
     evt.preventDefault();
     deleteSelected();
   } else if (evt.key === 'Escape') {
-    state.connectPending = null;
-    state.selection = null;
-    render();
+    closeInspector();
   }
 }
 
@@ -572,16 +587,35 @@ function renderInspector() {
   positionPopover();
 }
 
+function closeInspector() {
+  state.connectPending = null;
+  state.selection = null;
+  render();
+}
+
+function buildPopoverTitle(text) {
+  const title = document.createElement('div');
+  title.className = 'fea-pop-title';
+  const span = document.createElement('span');
+  span.textContent = text;
+  title.appendChild(span);
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'fea-pop-close';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', closeInspector);
+  title.appendChild(closeBtn);
+  return title;
+}
+
 function buildNodeInspector(pop, nodeId) {
   const node = state.nodes.find((n) => n.id === nodeId);
   if (!node) {
     pop.hidden = true;
     return;
   }
-  const title = document.createElement('div');
-  title.className = 'fea-pop-title';
-  title.textContent = `Node ${nodeId}`;
-  pop.appendChild(title);
+  pop.appendChild(buildPopoverTitle(`Node ${nodeId}`));
 
   const coordRow = document.createElement('div');
   coordRow.className = 'fea-row';
@@ -663,10 +697,7 @@ function buildElementInspector(pop, elId) {
     pop.hidden = true;
     return;
   }
-  const title = document.createElement('div');
-  title.className = 'fea-pop-title';
-  title.textContent = `Element ${elId} (${elData.nodeI} → ${elData.nodeJ})`;
-  pop.appendChild(title);
+  pop.appendChild(buildPopoverTitle(`Element ${elId} (${elData.nodeI} → ${elData.nodeJ})`));
 
   const typeRow = document.createElement('div');
   typeRow.className = 'fea-row';

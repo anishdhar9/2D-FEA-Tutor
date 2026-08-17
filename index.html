@@ -114,9 +114,23 @@
     padding: 10px 12px;
     width: 250px;
     font-size: 12px;
+    /* Only the interactive controls should capture clicks — the panel's
+       background/whitespace lets clicks fall through to the canvas beneath,
+       so an open popover for one node can't block clicking a different
+       node/element that happens to render underneath it (common in compact
+       models where nodes sit closer together than the popover is wide). */
+    pointer-events: none;
+  }
+  #inspector-popover input, #inspector-popover select, #inspector-popover button, #inspector-popover label {
+    pointer-events: auto;
   }
   #inspector-popover[hidden] { display: none; }
-  .fea-pop-title { font-weight: 700; margin-bottom: 8px; color: var(--text); }
+  .fea-pop-title { font-weight: 700; margin-bottom: 8px; color: var(--text); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .fea-pop-close {
+    pointer-events: auto; cursor: pointer; border: none; background: transparent; color: var(--muted);
+    font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+  }
+  .fea-pop-close:hover { background: #f1f5f9; color: var(--text); }
   .fea-subtitle { font-weight: 600; color: var(--muted); margin: 8px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
   .fea-section { border-top: 1px dashed var(--border); padding-top: 6px; margin-top: 6px; }
   .fea-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -129,9 +143,13 @@
     background: #fef2f2; color: #b91c1c; cursor: pointer; font-size: 12px;
   }
 
-  .results-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; padding: 12px; overflow: auto; }
+  .results-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; padding: 12px; }
   .results-tables h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
-  table.fea-results-table { border-collapse: collapse; width: 100%; font-size: 12px; background: white; }
+  /* Element forces has up to 8 columns (truss + beam shapes combined) and can
+     be wider than its grid cell — scroll horizontally within its own box
+     rather than clipping at the page edge or forcing the whole grid to scroll. */
+  .results-tables .table-scroll { overflow-x: auto; max-width: 100%; }
+  table.fea-results-table { border-collapse: collapse; width: 100%; min-width: max-content; font-size: 12px; background: white; }
   table.fea-results-table th, table.fea-results-table td {
     border: 1px solid var(--border); padding: 5px 8px; text-align: right; font-variant-numeric: tabular-nums;
   }
@@ -206,15 +224,15 @@
     <div class="results-tables">
       <div>
         <h3>Displacements</h3>
-        <div id="disp-table"></div>
+        <div id="disp-table" class="table-scroll"></div>
       </div>
       <div>
         <h3>Reactions</h3>
-        <div id="reaction-table"></div>
+        <div id="reaction-table" class="table-scroll"></div>
       </div>
       <div>
         <h3>Element forces</h3>
-        <div id="force-table"></div>
+        <div id="force-table" class="table-scroll"></div>
       </div>
     </div>
   </section>
@@ -296,12 +314,18 @@
   function drawResults() {
     if (!currentModel || !currentResults) return;
     const scaleFactor = defaultScale * (Number(scaleSlider.value) / 50);
-    renderResults({ svg: resultsSvg, model: currentModel, results: currentResults, scaleFactor });
+    // Tables first: the results-tables panel sits below the canvas in a flex
+    // column, so its rendered row count changes how much vertical space is
+    // left for the canvas above it. Populating tables *before* renderResults
+    // reads the canvas's clientHeight means that read reflects the layout's
+    // final, settled size — reading it first (against stale/empty tables)
+    // would fit the SVG to a too-tall canvas that then shrinks underneath it.
     renderAllTables({
       displacementsEl: document.getElementById('disp-table'),
       reactionsEl: document.getElementById('reaction-table'),
       elementForcesEl: document.getElementById('force-table'),
     }, currentResults);
+    renderResults({ svg: resultsSvg, model: currentModel, results: currentResults, scaleFactor });
     scaleReadout.textContent = scaleFactor.toFixed(1);
   }
 

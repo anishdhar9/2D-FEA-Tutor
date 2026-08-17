@@ -35,11 +35,21 @@ function dispById(results, id) {
 }
 
 /**
- * Suggest a deformation scale factor that makes the largest nodal
- * displacement render at roughly 15% of the model's characteristic span —
+ * Suggest a deformation scale factor that makes the largest visible
+ * deflection render at roughly 15% of the model's characteristic span —
  * displacements in real structures are almost always too small to see at a
  * literal 1:1 scale, so a sane non-1 default (paired with the UI's slider)
  * is the normal, expected way to look at a deformed shape, not a hack.
+ *
+ * "Largest visible deflection" is deliberately not just max nodal
+ * hypot(ux,uy): a statically-indeterminate single-beam-element case (the
+ * Phase 2 acceptance fixture) can have BOTH end nodes at ux=uy=0 exactly
+ * (one fully fixed, one a roller) with all of the bending carried by end
+ * rotation (rz) — see beamDeformedScreenPoints's cubic Hermite sampling in
+ * this file. Nodal-translation-only would compute maxDisp=0 there and fall
+ * back to scale=1, which is far too small to show the very sag this tool
+ * exists to make visible. So beam elements also contribute an order-of-
+ * magnitude estimate of their rotation-driven mid-span deflection.
  */
 export function computeDefaultScaleFactor(model, results) {
   const nodes = model.nodes || [];
@@ -50,10 +60,26 @@ export function computeDefaultScaleFactor(model, results) {
     minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
   }
   const span = Math.max(maxX - minX, maxY - minY, 1e-6);
+
   let maxDisp = 0;
   for (const d of results.displacements || []) {
     maxDisp = Math.max(maxDisp, Math.hypot(d.ux, d.uy));
   }
+  for (const e of model.elements || []) {
+    if (e.type !== 'beam') continue;
+    const ni = nodeById(model, e.nodeI);
+    const nj = nodeById(model, e.nodeJ);
+    if (!ni || !nj) continue;
+    const di = dispById(results, e.nodeI);
+    const dj = dispById(results, e.nodeJ);
+    const L = Math.hypot(nj.x - ni.x, nj.y - ni.y);
+    // ~1/8 of theta*L is the mid-span deflection of a beam whose bending is
+    // driven purely by one end's rotation (matches the cubic Hermite N4
+    // shape function's peak, N4(0.5) = -L/8) — a reasonable order-of-
+    // magnitude estimate regardless of the exact boundary conditions.
+    maxDisp = Math.max(maxDisp, Math.abs(di.rz || 0) * L * 0.15, Math.abs(dj.rz || 0) * L * 0.15);
+  }
+
   if (maxDisp === 0) return 1;
   return (0.15 * span) / maxDisp;
 }
@@ -72,7 +98,12 @@ function elementForceValue(ef) {
 function stressColor(value, maxAbs) {
   const neutral = [148, 163, 184]; // slate-400
   if (!maxAbs || !Number.isFinite(value) || value === 0) return `rgb(${neutral.join(',')})`;
-  const t = Math.min(Math.abs(value) / maxAbs, 1);
+  const raw = Math.min(Math.abs(value) / maxAbs, 1);
+  // sqrt easing: a low-magnitude member (small raw fraction of the model's
+  // peak stress) still reads as a clearly-tinted tension/compression color
+  // rather than washing out to near-neutral gray, while the peak member
+  // still lands on the fully-saturated color at t=1.
+  const t = 0.35 + 0.65 * Math.sqrt(raw);
   const target = value > 0 ? [37, 99, 235] : [220, 38, 38]; // tension=blue, compression=red
   const rgb = neutral.map((c, i) => Math.round(c + (target[i] - c) * t));
   return `rgb(${rgb.join(',')})`;
@@ -142,6 +173,60 @@ function drawUndeformed(content, view, model) {
   content.appendChild(g);
 }
 
+/**
+ * KNOWN SIMPLIFICATION (Phase 2 / B11) + a deliberate step beyond its MVP
+ * floor: docs/03-TRACK-B-UI.md explicitly accepts plain linear interpolation
+ * between a beam element's two *displaced end points* as MVP-sufficient, and
+ * explicitly defers true cubic-Hermite bending as a nice-to-have. Truss
+ * elements use exactly that plain 2-point interpolation below — correct as-is,
+ * since a truss member is straight regardless of end rotation (it has none).
+ *
+ * For beam elements we go one step further and sample the Euler-Bernoulli
+ * cubic Hermite shape (the same shape functions implied by the 12EI/L^3 /
+ * 6EI/L^2 stiffness terms in docs/02-TRACK-A-SOLVER.md's beam stiffness
+ * matrix), using the end rotations (rz) already present in the Results JSON.
+ * Reason: the Phase 2 acceptance fixture (propped cantilever) is a *single*
+ * beam element whose two end nodes both have ux=uy=0 exactly (one fully
+ * fixed, one a roller) — under pure linear interpolation the "deformed"
+ * chord between two zero-translation points is indistinguishable from the
+ * undeformed line, so the doc's own worked expectation ("should visibly sag
+ * more near midspan than at the roller end") would be unrenderable without
+ * this. It's additive, not a replacement for the accepted MVP — a straight
+ * 2-point line remains a valid, spec-compliant beam rendering too.
+ */
+function beamDeformedScreenPoints(view, ni, nj, di, dj, scaleFactor, samples = 16) {
+  const dx = nj.x - ni.x;
+  const dy = nj.y - ni.y;
+  const L = Math.hypot(dx, dy) || 1e-9;
+  const c = dx / L;
+  const s = dy / L;
+  // rotate global end displacements into the element's local (axial, transverse) frame
+  const u1 = c * di.ux + s * di.uy, v1 = -s * di.ux + c * di.uy, t1 = di.rz || 0;
+  const u2 = c * dj.ux + s * dj.uy, v2 = -s * dj.ux + c * dj.uy, t2 = dj.rz || 0;
+
+  const pts = [];
+  for (let k = 0; k <= samples; k++) {
+    const xi = k / samples;
+    const x = xi * L;
+    const u = u1 * (1 - xi) + u2 * xi; // axial: linear (decoupled from bending)
+    const xi2 = xi * xi, xi3 = xi2 * xi;
+    const N1 = 1 - 3 * xi2 + 2 * xi3;
+    const N2 = L * (xi - 2 * xi2 + xi3);
+    const N3 = 3 * xi2 - 2 * xi3;
+    const N4 = L * (xi3 - xi2);
+    const v = N1 * v1 + N2 * t1 + N3 * v2 + N4 * t2; // transverse: cubic Hermite bending shape
+    const baseX = ni.x + c * x, baseY = ni.y + s * x; // undeformed point along the axis
+    const gx = baseX + scaleFactor * (c * u - s * v);
+    const gy = baseY + scaleFactor * (s * u + c * v);
+    pts.push(worldToScreen(view, gx, gy));
+  }
+  return pts;
+}
+
+function polylinePoints(pts) {
+  return pts.map((p) => `${p.x},${p.y}`).join(' ');
+}
+
 function drawDeformed(content, view, model, results, scaleFactor, maxAbs) {
   const g = createSvgEl('g', { class: 'deformed' });
   const efById = new Map((results.elementForces || []).map((ef) => [ef.element, ef]));
@@ -152,32 +237,39 @@ function drawDeformed(content, view, model, results, scaleFactor, maxAbs) {
     if (!ni || !nj) continue;
     const di = dispById(results, e.nodeI);
     const dj = dispById(results, e.nodeJ);
-    // KNOWN SIMPLIFICATION (Phase 2 / B11): the deformed shape between a beam
-    // element's two nodes is drawn as a straight line through the displaced
-    // end points (linear interpolation), ignoring end rotations (rz) and the
-    // true cubic Hermite bending curve. This is an explicitly-accepted MVP
-    // per docs/03-TRACK-B-UI.md — good enough to see "which way it sagged",
-    // not a physically exact bent shape. Truss elements are exact either way
-    // (they are straight members regardless).
-    const pi = worldToScreen(view, ni.x + di.ux * scaleFactor, ni.y + di.uy * scaleFactor);
-    const pj = worldToScreen(view, nj.x + dj.ux * scaleFactor, nj.y + dj.uy * scaleFactor);
 
     const ef = efById.get(e.id);
     const { value } = ef ? elementForceValue(ef) : { value: 0 };
     const color = stressColor(value, maxAbs);
+    const strokeWidth = e.type === 'beam' ? 5 : 3;
 
-    const line = createSvgEl('line', {
-      x1: pi.x, y1: pi.y, x2: pj.x, y2: pj.y,
-      stroke: color, 'stroke-width': e.type === 'beam' ? 5 : 3, 'stroke-linecap': 'round',
-    });
+    let shape;
+    let pi, pj;
+    if (e.type === 'beam') {
+      const pts = beamDeformedScreenPoints(view, ni, nj, di, dj, scaleFactor);
+      pi = pts[0];
+      pj = pts[pts.length - 1];
+      shape = createSvgEl('polyline', {
+        points: polylinePoints(pts), fill: 'none',
+        stroke: color, 'stroke-width': strokeWidth, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      });
+    } else {
+      pi = worldToScreen(view, ni.x + di.ux * scaleFactor, ni.y + di.uy * scaleFactor);
+      pj = worldToScreen(view, nj.x + dj.ux * scaleFactor, nj.y + dj.uy * scaleFactor);
+      shape = createSvgEl('line', {
+        x1: pi.x, y1: pi.y, x2: pj.x, y2: pj.y,
+        stroke: color, 'stroke-width': strokeWidth, 'stroke-linecap': 'round',
+      });
+    }
+
     const title = createSvgEl('title');
     title.textContent = ef
       ? (typeof ef.axialStress === 'number'
         ? `${e.id}: axialForce=${formatLabel(ef.axialForce)} N, axialStress=${formatLabel(ef.axialStress)} Pa`
         : `${e.id}: axialForceI=${formatLabel(ef.axialForceI)} N, shearI=${formatLabel(ef.shearI)} N, momentI=${formatLabel(ef.momentI)} N·m, shearJ=${formatLabel(ef.shearJ)} N, momentJ=${formatLabel(ef.momentJ)} N·m`)
       : `${e.id}: no elementForces in results`;
-    line.appendChild(title);
-    g.appendChild(line);
+    shape.appendChild(title);
+    g.appendChild(shape);
 
     const mx = (pi.x + pj.x) / 2;
     const my = (pi.y + pj.y) / 2;
