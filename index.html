@@ -67,7 +67,17 @@
   }
   .toolbar button.active { background: var(--accent); color: white; border-color: var(--accent); }
   .toolbar .spacer { flex: 1; }
-  .toolbar .hint { font-size: 12px; color: var(--muted); }
+  /* white-space:nowrap + min-width:0 (overriding the flex-item default of
+     min-width:auto, which would otherwise refuse to shrink below the text's
+     natural width) + ellipsis: the hint text changes length/content
+     continuously during interaction (e.g. "Drawing from N1 -> ..." while
+     draw-dragging) and must NEVER wrap the toolbar onto a second line —
+     doing so would change the toolbar's height, which shrinks the SVG's
+     clientHeight, which shifts computeFitView's output and moves every
+     node on screen out from under an in-progress drag. Truncating with an
+     ellipsis instead keeps the toolbar's height rock solid regardless of
+     message length or viewport width. */
+  .toolbar .hint { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .toolbar label.slider-label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 
   .split { flex: 1; min-height: 0; display: flex; }
@@ -135,7 +145,28 @@
     pointer-events: auto;
   }
   #inspector-popover[hidden] { display: none; }
-  .fea-pop-title { font-weight: 700; margin-bottom: 8px; color: var(--text); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .fea-pop-title {
+    font-weight: 700; margin-bottom: 8px; color: var(--text); display: flex; justify-content: space-between;
+    align-items: center; gap: 8px;
+    /* Deliberately NOT pointer-events:auto here (stays none, inherited from
+       #inspector-popover) — only the grip below and the close button are
+       real controls. The title's plain text/whitespace must stay
+       click-through, same as the rest of the popover's background: a
+       popover for one node must never block clicking a different
+       node/element that happens to render underneath it, and a
+       wide/tall region here (the whole title bar) is exactly the kind of
+       area a nearby node/element could realistically sit under in a
+       compact model. */
+  }
+  .fea-pop-grip {
+    pointer-events: auto; cursor: move; touch-action: none;
+    display: inline-block; width: 14px; height: 18px; flex-shrink: 0; border-radius: 2px;
+    background-image: radial-gradient(circle, var(--muted) 1.2px, transparent 1.3px);
+    background-size: 6px 6px;
+    background-position: center;
+    opacity: 0.55;
+  }
+  .fea-pop-grip:hover { opacity: 1; background-color: #f1f5f9; }
   .fea-pop-close {
     pointer-events: auto; cursor: pointer; border: none; background: transparent; color: var(--muted);
     font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: 4px;
@@ -151,6 +182,34 @@
   .fea-delete-btn {
     margin-top: 10px; width: 100%; padding: 6px; border-radius: 6px; border: 1px solid #fca5a5;
     background: #fef2f2; color: #b91c1c; cursor: pointer; font-size: 12px;
+  }
+
+  /* Numeric length/angle override shown while draw-dragging a new element —
+     see canvas.js's openNumericEntry. Positioned absolutely over
+     canvas-wrap, same technique as #inspector-popover. */
+  .fea-numeric-entry {
+    position: absolute;
+    z-index: 25;
+    width: 108px;
+    font-size: 12px;
+    font-family: monospace;
+    padding: 4px 6px;
+    border: 1.5px solid var(--accent);
+    border-radius: 4px;
+    background: white;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
+  }
+
+  #cursor-coords {
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--muted);
+    background: #f1f5f9;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-bottom: 10px;
+    font-variant-numeric: tabular-nums;
   }
 
   .results-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; padding: 12px; }
@@ -186,12 +245,13 @@
   <section id="view-builder" class="view active">
     <div class="toolbar">
       <button id="connect-toggle-btn" type="button">Connect Mode: OFF</button>
+      <button id="snap-toggle-btn" type="button" class="active" aria-pressed="true">Snap: ON</button>
       <button id="fit-view-btn" type="button">Fit View</button>
       <button id="zoom-in-btn" type="button">Zoom +</button>
       <button id="zoom-out-btn" type="button">Zoom −</button>
       <button id="clear-btn" type="button">Clear All</button>
       <span class="spacer"></span>
-      <span class="hint" id="hint">Click empty canvas to add a node.</span>
+      <span class="hint" id="hint">Click empty canvas for a node, or drag from a node to draw an element.</span>
     </div>
     <div class="split">
       <div class="canvas-wrap" id="canvas-wrap">
@@ -201,6 +261,8 @@
       <aside class="side-panel">
         <button id="solve-btn" type="button" class="solve-btn">Solve ▸</button>
         <div id="solve-error" class="solve-error" hidden></div>
+        <h2>Cursor</h2>
+        <div id="cursor-coords">X: — m  Y: — m</div>
         <h2>Model JSON (getModel())</h2>
         <pre id="model-json-preview">{}</pre>
       </aside>
@@ -253,7 +315,7 @@
 </main>
 
 <script type="module">
-  import { initCanvas, getModel } from './src/ui/canvas.js';
+  import { initCanvas, getModel, formatLabel } from './src/ui/canvas.js';
   import { renderResults, computeDefaultScaleFactor } from './src/ui/render.js';
   import { renderAllTables } from './src/ui/results-panel.js';
   import { solveModel } from './src/solver/index.js';
@@ -277,6 +339,7 @@
 
   // ---- builder ----
   const modelJsonPreview = document.getElementById('model-json-preview');
+  const cursorCoordsEl = document.getElementById('cursor-coords');
   const solveErrorEl = document.getElementById('solve-error');
   const solveBtn = document.getElementById('solve-btn');
   solveBtn.addEventListener('click', () => {
@@ -289,6 +352,7 @@
     canvasWrap: document.getElementById('canvas-wrap'),
     popover: document.getElementById('inspector-popover'),
     connectToggleBtn: document.getElementById('connect-toggle-btn'),
+    snapToggleBtn: document.getElementById('snap-toggle-btn'),
     fitViewBtn: document.getElementById('fit-view-btn'),
     zoomInBtn: document.getElementById('zoom-in-btn'),
     zoomOutBtn: document.getElementById('zoom-out-btn'),
@@ -296,6 +360,9 @@
     hintEl: document.getElementById('hint'),
     onChange: (model) => {
       modelJsonPreview.textContent = JSON.stringify(model, null, 2);
+    },
+    onCursorMove: (x, y) => {
+      cursorCoordsEl.textContent = `X: ${formatLabel(x)} m  Y: ${formatLabel(y)} m`;
     },
   });
 
