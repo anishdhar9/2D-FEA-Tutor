@@ -1,0 +1,23 @@
+{
+  "meta": { "units": "SI" },
+  "nodes": [
+    { "id": "A", "x": 0.0, "y": 0.0 },
+    { "id": "B", "x": 4.0, "y": 0.0 },
+    { "id": "C", "x": 2.0, "y": 3.0 }
+  ],
+  "elements": [
+    { "id": "e1", "type": "truss", "nodeI": "A", "nodeJ": "B", "E": 2.0e11, "A": 5.0e-4 },
+    { "id": "e2", "type": "truss", "nodeI": "B", "nodeJ": "C", "E": 2.0e11, "A": 5.0e-4 },
+    { "id": "e3", "type": "truss", "nodeI": "A", "nodeJ": "C", "E": 2.0e11, "A": 5.0e-4 }
+  ],
+  "supports": [
+    { "node": "A", "ux": true, "uy": true, "rz": false },
+    { "node": "B", "ux": false, "uy": true, "rz": false }
+  ],
+  "loads": {
+    "nodal": [
+      { "node": "C", "fx": 4000.0, "fy": -10000.0, "mz": 0.0 }
+    ],
+    "distributed": []
+  }
+}
