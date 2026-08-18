@@ -940,13 +940,53 @@ function labeledInput(labelText, inputEl) {
   return wrap;
 }
 
+/**
+ * Shared numeric field used throughout the inspector popover. Every field
+ * gets the same three affordances, added here once rather than per call
+ * site: Enter confirms and moves focus away (the value is already live via
+ * 'input', same as before); Escape reverts both the field's display AND the
+ * underlying state to whatever it was when the field gained focus, then also
+ * moves focus away; and blur (however focus left — click-away, Enter, or
+ * Escape) triggers one full render() to resync the rest of the UI. That's
+ * the "final sync" moment that replaces the old always-on-every-keystroke
+ * popover rebuild: it now happens once per edit instead of once per
+ * character, which is what was previously stealing focus from these fields
+ * (see renderCanvas() above).
+ */
 function numberInput(value, onInput, opts = {}) {
   const inp = document.createElement('input');
   inp.type = 'number';
   if (opts.step !== undefined) inp.step = opts.step;
   else inp.step = 'any';
   inp.value = value;
+
+  let valueOnFocus = value;
+  inp.addEventListener('focus', () => {
+    valueOnFocus = inp.value;
+  });
   inp.addEventListener('input', () => onInput(parseFloat(inp.value) || 0));
+  inp.addEventListener('keydown', (evt) => {
+    if (evt.key === 'Enter') {
+      evt.preventDefault();
+      inp.blur();
+    } else if (evt.key === 'Escape') {
+      evt.preventDefault();
+      // Must stop this from reaching the document-level keydown handler:
+      // that handler's own Escape branch (closeInspector) isn't guarded by
+      // its "typing" check the way Delete/Backspace are, so without this an
+      // Escape meant to cancel just this field's edit would also deselect
+      // and close the whole popover — a much bigger action than "cancel
+      // this edit." Mirrors the identical stopPropagation()-on-Escape
+      // already used by the draw-mode numeric-entry overlay.
+      evt.stopPropagation();
+      inp.value = valueOnFocus;
+      onInput(parseFloat(inp.value) || 0);
+      inp.blur();
+    }
+  });
+  inp.addEventListener('blur', () => {
+    render();
+  });
   return inp;
 }
 
@@ -1064,10 +1104,10 @@ function buildNodeInspector(pop, nodeId) {
   const coordRow = document.createElement('div');
   coordRow.className = 'fea-row';
   coordRow.appendChild(labeledInput('x (m)', numberInput(node.x, (v) => {
-    node.x = v; render(); notifyChange();
+    node.x = v; renderCanvas(); notifyChange();
   })));
   coordRow.appendChild(labeledInput('y (m)', numberInput(node.y, (v) => {
-    node.y = v; render(); notifyChange();
+    node.y = v; renderCanvas(); notifyChange();
   })));
   pop.appendChild(coordRow);
 
@@ -1118,7 +1158,7 @@ function buildNodeInspector(pop, nodeId) {
     l[key] = v;
     if (l.fx === 0 && l.fy === 0 && l.mz === 0) delete state.nodalLoads[nodeId];
     else state.nodalLoads[nodeId] = l;
-    render();
+    renderCanvas();
     notifyChange();
   };
   loadRow.appendChild(labeledInput('fx (N)', numberInput(existingLoad.fx, (v) => setLoad('fx', v))));
@@ -1159,14 +1199,14 @@ function buildElementInspector(pop, elId) {
       const angleNow = angleDegrees(ni.x, ni.y, nj.x, nj.y);
       const pt = pointFromLengthAngle(ni.x, ni.y, v, angleNow);
       nj.x = pt.x; nj.y = pt.y;
-      render();
+      renderCanvas();
       notifyChange();
     })));
     geomRow.appendChild(labeledInput('Angle (°)', numberInput(round3(curAngle), (v) => {
       const lengthNow = segmentLength(ni.x, ni.y, nj.x, nj.y);
       const pt = pointFromLengthAngle(ni.x, ni.y, lengthNow, v);
       nj.x = pt.x; nj.y = pt.y;
-      render();
+      renderCanvas();
       notifyChange();
     })));
     pop.appendChild(geomRow);
@@ -1222,7 +1262,7 @@ function buildElementInspector(pop, elId) {
     wyRow.appendChild(labeledInput('wy (N/m)', numberInput(existingWy, (v) => {
       if (v === 0) delete state.distributedLoads[elId];
       else state.distributedLoads[elId] = { wy: v };
-      render();
+      renderCanvas();
       notifyChange();
     })));
     distSection.appendChild(wyRow);
@@ -1291,8 +1331,26 @@ function positionPopover() {
 }
 
 // ---- main render --------------------------------------------------------
+//
+// render() is a full rebuild: the SVG drawing AND the inspector popover's DOM
+// (renderInspector() clears and rebuilds it — see there). That popover
+// rebuild is exactly what must NOT happen on every keystroke of a text
+// field, or focus gets dropped from the freshly-recreated <input> after every
+// character (the bug this split fixes). renderCanvas() is the SVG-only half,
+// safe to call from a field's live 'input' handler: it redraws the geometry
+// (so a node visibly moves as you type its x) and repositions the popover
+// via positionPopover() (CSS left/top only, never clearChildren, so it can't
+// cost focus either) without touching the popover's contents. Everywhere
+// else that doesn't have a focused text field to protect (delete, add-node,
+// connect, draw-to-create, resetCanvas, a support-radio or type-select
+// change, window resize) keeps calling the full render() as before.
 
 function render() {
+  renderCanvas();
+  renderInspector();
+}
+
+function renderCanvas() {
   if (!refs) return;
   const { svg, content } = refs;
   const { w, h } = svgSize();
@@ -1338,7 +1396,7 @@ function render() {
   drawAxisLegend(content, w, h);
 
   updateToolbarUI();
-  renderInspector();
+  if (state.selection) positionPopover();
 }
 
 function drawDrawPreview(content) {
