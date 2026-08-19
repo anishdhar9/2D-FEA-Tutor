@@ -34,6 +34,11 @@ import {
   nextNodeId,
   nextElementId,
   formatLabel,
+  angleDegrees,
+  segmentLength,
+  snapAngleDegrees,
+  pointFromLengthAngle,
+  computeDrawEndpoint,
 } from '../src/ui/canvas.js';
 import { computeDefaultScaleFactor } from '../src/ui/render.js';
 
@@ -180,4 +185,90 @@ test('computeDefaultScaleFactor: propped cantilever (rotation-only deflection) s
   const results = loadFixtureJson('mock-propped-cantilever.results.json');
   const scale = computeDefaultScaleFactor(model, results);
   assert.ok(Number.isFinite(scale) && scale > 1, `expected a scale well above the maxDisp=0 fallback of 1, got ${scale}`);
+});
+
+// ---------------------------------------------------------------------------
+// Draw-drag geometry: angleDegrees, segmentLength, snapAngleDegrees,
+// pointFromLengthAngle, computeDrawEndpoint (drag-from-node-to-draw-element,
+// angle snapping, and the element inspector's Length/Angle fields).
+// ---------------------------------------------------------------------------
+
+test('angleDegrees: standard math convention, 0deg=+x, 90deg=+y, CCW positive', () => {
+  assert.equal(angleDegrees(0, 0, 1, 0), 0);
+  assert.equal(angleDegrees(0, 0, 0, 1), 90);
+  assert.equal(angleDegrees(0, 0, -1, 0), 180);
+  assert.equal(angleDegrees(0, 0, 0, -1), -90);
+  assert.ok(Math.abs(angleDegrees(0, 0, 1, 1) - 45) < 1e-9);
+});
+
+test('segmentLength: Euclidean distance between two points', () => {
+  assert.equal(segmentLength(0, 0, 3, 4), 5);
+  assert.equal(segmentLength(1, 1, 1, 1), 0);
+});
+
+test('snapAngleDegrees: snaps to the nearest 45deg multiple within tolerance', () => {
+  assert.equal(snapAngleDegrees(44, 45, 7), 45);
+  assert.equal(snapAngleDegrees(46, 45, 7), 45);
+  assert.equal(snapAngleDegrees(38.5, 45, 7), 45);
+  assert.equal(snapAngleDegrees(0, 45, 7), 0);
+  assert.equal(snapAngleDegrees(90, 45, 7), 90);
+});
+
+test('snapAngleDegrees: leaves the angle unchanged when outside tolerance', () => {
+  assert.equal(snapAngleDegrees(30, 45, 7), 30);
+  assert.equal(snapAngleDegrees(20, 45, 7), 20);
+});
+
+test('snapAngleDegrees: wraps correctly across the 0/360 boundary', () => {
+  assert.equal(snapAngleDegrees(358, 45, 7), 0);
+  assert.equal(snapAngleDegrees(-2, 45, 7), 0);
+  assert.equal(snapAngleDegrees(-46, 45, 7), 315);
+});
+
+test('pointFromLengthAngle: computes an endpoint at a given length/angle from a start point', () => {
+  const p = pointFromLengthAngle(0, 0, 5, 0);
+  assert.ok(Math.abs(p.x - 5) < 1e-9 && Math.abs(p.y - 0) < 1e-9);
+  const p2 = pointFromLengthAngle(1, 1, 10, 90);
+  assert.ok(Math.abs(p2.x - 1) < 1e-9 && Math.abs(p2.y - 11) < 1e-9);
+});
+
+test('pointFromLengthAngle / angleDegrees / segmentLength: round-trip inverse', () => {
+  const x0 = 2, y0 = -3, length = 7.25, angleDeg = 123.4;
+  const p = pointFromLengthAngle(x0, y0, length, angleDeg);
+  assert.ok(Math.abs(segmentLength(x0, y0, p.x, p.y) - length) < 1e-9);
+  assert.ok(Math.abs(angleDegrees(x0, y0, p.x, p.y) - angleDeg) < 1e-9);
+});
+
+test('computeDrawEndpoint: snaps direction near a 45deg multiple but keeps the dragged distance', () => {
+  // Cursor sits just 0.3 off the x-axis at a raw distance of ~5.009 — well
+  // within the default 7deg tolerance of 0deg.
+  const rawLength = segmentLength(0, 0, 5, 0.3);
+  const result = computeDrawEndpoint(0, 0, 5, 0.3, true);
+  assert.equal(result.angleDeg, 0);
+  assert.ok(Math.abs(result.y) < 1e-9, 'snapped endpoint should land exactly on the x-axis');
+  assert.ok(Math.abs(result.x - rawLength) < 1e-9, 'x equals the preserved raw drag distance since angle snapped to 0');
+  assert.ok(Math.abs(result.length - rawLength) < 1e-9, 'reported length matches the raw dragged distance, unchanged by snapping');
+});
+
+test('computeDrawEndpoint: leaves an unsnappable angle untouched', () => {
+  const result = computeDrawEndpoint(0, 0, 5, 3, true); // atan2(3,5) ~= 31 deg, far from any 45deg multiple
+  const rawAngle = angleDegrees(0, 0, 5, 3);
+  assert.ok(Math.abs(result.angleDeg - rawAngle) < 1e-9);
+  assert.ok(Math.abs(result.x - 5) < 1e-9 && Math.abs(result.y - 3) < 1e-9);
+});
+
+test('computeDrawEndpoint: snapping disabled returns the raw cursor point unchanged even near a snap angle', () => {
+  const result = computeDrawEndpoint(0, 0, 5, 0.3, false);
+  const rawAngle = angleDegrees(0, 0, 5, 0.3);
+  assert.ok(Math.abs(result.angleDeg - rawAngle) < 1e-9);
+  assert.ok(Math.abs(result.x - 5) < 1e-9 && Math.abs(result.y - 0.3) < 1e-9);
+});
+
+test('computeDrawEndpoint: start point offset from the origin snaps correctly too', () => {
+  // Start at (2,2), cursor nearly straight up from it (89.5deg) -> should
+  // snap to exactly 90deg, i.e. endpoint lands with the same x as the start.
+  const result = computeDrawEndpoint(2, 2, 2.02, 6, true);
+  assert.equal(result.angleDeg, 90);
+  assert.ok(Math.abs(result.x - 2) < 1e-9, 'snapped to 90deg means endpoint.x equals the start x');
+  assert.ok(result.y > 2, 'endpoint should be above the start point');
 });

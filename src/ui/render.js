@@ -20,6 +20,8 @@ import {
   buildArrowDefs,
   classifySupport,
   formatLabel,
+  drawOriginMarker,
+  drawAxisLegend,
 } from './canvas.js';
 
 function clearChildren(el) {
@@ -144,11 +146,17 @@ export function renderResults({ svg, model, results, scaleFactor = 1, showUndefo
     maxAbs = Math.max(maxAbs, Math.abs(elementForceValue(ef).value));
   }
 
+  drawOriginMarker(content, view, w, h);
   if (showUndeformed) drawUndeformed(content, view, model);
   drawDeformed(content, view, model, results, scaleFactor, maxAbs);
   drawSupports(content, view, model);
   drawAppliedLoads(content, view, model);
   drawReactions(content, view, model, results);
+  // fixed screen-space axis gizmo, drawn last so it's always on top; reuses
+  // the load-arrowhead marker id already defined above (the default
+  // 'fea-arrowhead' id isn't defined in this SVG's defs, unlike canvas.js's
+  // builder canvas).
+  drawAxisLegend(content, w, h, { markerId: 'fea-load-arrowhead' });
 
   return { view };
 }

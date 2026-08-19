@@ -149,6 +149,61 @@ export function formatLabel(v, maxDp = 3) {
   return String(Math.round(v * 10 ** maxDp) / 10 ** maxDp);
 }
 
+/** Pure: angle in degrees from (x1,y1) to (x2,y2), standard math convention
+ * (0°=+x axis, 90°=+y axis, counterclockwise positive) — matches how a
+ * student would read angles off a hand-drawn free-body diagram, not screen
+ * angle (which would be y-flipped). */
+export function angleDegrees(x1, y1, x2, y2) {
+  return Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
+}
+
+/** Pure: Euclidean distance from (x1,y1) to (x2,y2). */
+export function segmentLength(x1, y1, x2, y2) {
+  return Math.hypot(x2 - x1, y2 - y1);
+}
+
+/**
+ * Pure: snap `angleDeg` to the nearest multiple of `step` degrees if it's
+ * within `tolerance` degrees of one, otherwise return it unchanged. Used to
+ * make freehand-dragged elements land on clean 0/45/90/... angles without
+ * forcing exact mouse precision. Handles the 0/360 wraparound correctly
+ * (e.g. -2° is within tolerance of the 0°/360° multiple).
+ */
+export function snapAngleDegrees(angleDeg, step = 45, tolerance = 7) {
+  const normalized = ((angleDeg % 360) + 360) % 360;
+  const nearest = Math.round(normalized / step) * step;
+  const diff = Math.abs(normalized - nearest);
+  const wrapped = Math.min(diff, 360 - diff);
+  if (wrapped <= tolerance) return nearest % 360;
+  return angleDeg;
+}
+
+/** Pure: the point at `length` along `angleDeg` (standard math convention,
+ * see angleDegrees) from (x0,y0). Inverse of angleDegrees+segmentLength
+ * together. */
+export function pointFromLengthAngle(x0, y0, length, angleDeg) {
+  const rad = angleDeg * (Math.PI / 180);
+  return { x: x0 + length * Math.cos(rad), y: y0 + length * Math.sin(rad) };
+}
+
+/**
+ * Pure: the single source of truth for "where does a draw-drag from
+ * (x0,y0) to the live cursor (xCursor,yCursor) currently end?" — used by
+ * both the live rubber-band preview and (indirectly, for the un-snapped
+ * case) the final commit, so the preview a user watches while dragging can
+ * never disagree with what actually gets created. When `snapEnabled` and
+ * the raw angle is close to a multiple of `snapStep` degrees, the returned
+ * point is rotated onto that exact angle while preserving the dragged
+ * distance; otherwise the raw cursor point is returned as-is.
+ */
+export function computeDrawEndpoint(x0, y0, xCursor, yCursor, snapEnabled = true, snapStep = 45, snapTolerance = 7) {
+  const rawLength = segmentLength(x0, y0, xCursor, yCursor);
+  const rawAngle = angleDegrees(x0, y0, xCursor, yCursor);
+  const angleDeg = snapEnabled ? snapAngleDegrees(rawAngle, snapStep, snapTolerance) : rawAngle;
+  const pt = pointFromLengthAngle(x0, y0, rawLength, angleDeg);
+  return { x: pt.x, y: pt.y, length: rawLength, angleDeg };
+}
+
 // ---------------------------------------------------------------------------
 // SVG drawing helpers (DOM-touching, but reusable by render.js — both this
 // builder canvas and the results canvas draw the same support/load/moment
@@ -321,6 +376,73 @@ export function buildArrowDefs({
   return defs;
 }
 
+/**
+ * Draw a small crosshair + "0,0" label at the world origin — only if that
+ * screen point currently falls within (or reasonably near, per `opts.margin`)
+ * the `width` x `height` viewport, so a view panned far away from the origin
+ * doesn't get cluttered with an off-screen marker. Returns the drawn <g>, or
+ * null if the origin is out of range (nothing drawn).
+ */
+export function drawOriginMarker(parent, view, width, height, opts = {}) {
+  const p = worldToScreen(view, 0, 0);
+  const margin = opts.margin ?? 40;
+  if (p.x < -margin || p.x > width + margin || p.y < -margin || p.y > height + margin) return null;
+  const size = opts.size || 9;
+  const color = opts.color || '#94a3b8';
+  const g = createSvgEl('g', { class: 'origin-marker' });
+  g.appendChild(createSvgEl('line', { x1: p.x - size, y1: p.y, x2: p.x + size, y2: p.y, stroke: color, 'stroke-width': 1.5 }));
+  g.appendChild(createSvgEl('line', { x1: p.x, y1: p.y - size, x2: p.x, y2: p.y + size, stroke: color, 'stroke-width': 1.5 }));
+  g.appendChild(createSvgEl('circle', { cx: p.x, cy: p.y, r: 3, fill: 'none', stroke: color, 'stroke-width': 1.5 }));
+  const label = createSvgEl('text', {
+    x: p.x + size + 3, y: p.y + size + 11, 'font-size': 10, 'font-family': 'monospace', fill: color,
+  });
+  label.textContent = '0,0';
+  g.appendChild(label);
+  parent.appendChild(g);
+  return g;
+}
+
+/**
+ * Draw a small axis gizmo FIXED in the bottom-left corner of the viewport —
+ * in screen-space pixel coordinates only (`width`/`height`), independent of
+ * `view`, so unlike everything else this canvas draws, it does NOT pan or
+ * zoom with the model. Short +X arrow (right, "X") and +Y arrow (up on
+ * screen, "Y"), built from the shared drawArrow helper.
+ *
+ * This is a functional sign-convention check, not decoration: the model is
+ * y-up but SVG screen space is y-down (see worldToScreen), so a correct +Y
+ * arrow here always points up on screen — a quick visible sanity check for
+ * students against getting bitten by that flip.
+ */
+export function drawAxisLegend(parent, width, height, opts = {}) {
+  const len = opts.length || 26;
+  const margin = opts.margin || 22;
+  const originX = margin;
+  const originY = height - margin;
+  const markerId = opts.markerId || 'fea-arrowhead';
+  const xColor = opts.xColor || '#dc2626';
+  const yColor = opts.yColor || '#2563eb';
+  const g = createSvgEl('g', { class: 'axis-legend' });
+  drawArrow(g, { x: originX, y: originY }, { x: originX + len, y: originY }, {
+    color: xColor, width: 2, markerId,
+  });
+  drawArrow(g, { x: originX, y: originY }, { x: originX, y: originY - len }, {
+    color: yColor, width: 2, markerId,
+  });
+  const xLabel = createSvgEl('text', {
+    x: originX + len + 5, y: originY + 4, 'font-size': 11, 'font-family': 'monospace', 'font-weight': 700, fill: xColor,
+  });
+  xLabel.textContent = 'X';
+  g.appendChild(xLabel);
+  const yLabel = createSvgEl('text', {
+    x: originX, y: originY - len - 7, 'font-size': 11, 'font-family': 'monospace', 'font-weight': 700, fill: yColor, 'text-anchor': 'middle',
+  });
+  yLabel.textContent = 'Y';
+  g.appendChild(yLabel);
+  parent.appendChild(g);
+  return g;
+}
+
 // ---------------------------------------------------------------------------
 // Interactive builder (DOM-dependent)
 // ---------------------------------------------------------------------------
@@ -329,6 +451,7 @@ let state = createInitialState();
 let view = { scale: 60, originX: 0, originY: 0 };
 let autoFit = true;
 let refs = null;
+let snapEnabled = true; // angle-snap while draw-dragging a new element, see computeDrawEndpoint
 
 /** The single function the integration step calls to hand off to the solver. */
 export function getModel() {
@@ -403,9 +526,20 @@ function createElementBetween(a, b) {
   state.selection = { kind: 'element', id };
 }
 
-// ---- pointer handling: click vs. drag-to-pan -------------------------------
+// ---- pointer handling: click vs. drag-to-pan vs. drag-to-draw --------------
+//
+// What a press-drag DOES depends on what was under the pointer at the moment
+// of the initial pointerdown (captured as pointerDown.startNodeId below):
+// starting on an existing node makes it a "draw" drag (rubber-band a new
+// element from that node); starting anywhere else (empty canvas, or on an
+// existing element) makes it a "pan" drag, same as this app has always done.
+// Which of the two it is isn't decided until the existing 4px move threshold
+// is crossed — same reasoning as before: don't hijack what might just be a
+// click.
 
-let pointerDown = null; // { x, y, dragging, panStart }
+let pointerDown = null; // { x, y, dragging, dragMode: 'pan'|'draw'|null, startNodeId, originX, originY }
+let drawPreview = null; // { startNodeId, endWorld: {x,y}, length, angleDeg } while dragMode === 'draw'
+let numericEntry = null; // { lengthInput, angleInput } while the numeric length/angle override is open
 
 function svgSize() {
   const w = refs.svg.clientWidth || 600;
@@ -413,41 +547,179 @@ function svgSize() {
   return { w, h };
 }
 
+/** Convert an SVG-local screen point (as produced by worldToScreen) back to
+ * viewport/client coordinates, i.e. what document.elementFromPoint expects. */
+function screenToClient(sx, sy) {
+  const rect = refs.svg.getBoundingClientRect();
+  return { clientX: rect.left + sx, clientY: rect.top + sy };
+}
+
+/**
+ * Hit-test a viewport/client point against the rendered node/element SVG
+ * elements. Always uses document.elementFromPoint, NEVER evt.target — see
+ * the note in onPointerUp below for why that matters once pointer capture is
+ * active. Shared by every hit-test in this file (mouse release AND the
+ * numeric-entry commit path, which synthesizes a client point from a world
+ * coordinate) so they can never disagree about what's "under" a point.
+ */
+function hitTestAt(clientX, clientY) {
+  const hit = document.elementFromPoint(clientX, clientY);
+  const nodeTarget = hit && hit.closest && hit.closest('[data-node-id]');
+  const elTarget = !nodeTarget && hit && hit.closest && hit.closest('[data-element-id]');
+  return { nodeTarget, elTarget };
+}
+
+function notifyCursorMove(sx, sy) {
+  if (refs && typeof refs.onCursorMove === 'function') {
+    const world = screenToWorld(view, sx, sy);
+    refs.onCursorMove(world.x, world.y);
+  }
+}
+
 function onPointerDown(evt) {
   if (evt.button !== undefined && evt.button !== 0) return;
   const rect = refs.svg.getBoundingClientRect();
   const sx = evt.clientX - rect.left;
   const sy = evt.clientY - rect.top;
-  pointerDown = { x: sx, y: sy, dragging: false, originX: view.originX, originY: view.originY };
+  // Hit-test BEFORE requesting pointer capture below. elementFromPoint does a
+  // real geometric hit-test regardless of capture state, so ordering doesn't
+  // matter for correctness here — but doing it first keeps the "what was
+  // under the initial press" intent obviously separate from the capture call.
+  const hit = document.elementFromPoint(evt.clientX, evt.clientY);
+  const nodeTarget = hit && hit.closest && hit.closest('[data-node-id]');
+  const startNodeId = nodeTarget ? nodeTarget.getAttribute('data-node-id') : null;
+  pointerDown = {
+    x: sx, y: sy, dragging: false, dragMode: null, startNodeId,
+    originX: view.originX, originY: view.originY,
+  };
   refs.svg.setPointerCapture?.(evt.pointerId);
 }
 
 function onPointerMove(evt) {
-  if (!pointerDown) return;
   const rect = refs.svg.getBoundingClientRect();
   const sx = evt.clientX - rect.left;
   const sy = evt.clientY - rect.top;
+
+  // Live coordinate readout: fires on every canvas pointer-move regardless
+  // of drag state, not just while idle or while dragging.
+  notifyCursorMove(sx, sy);
+
+  if (!pointerDown) return;
+
   const dx = sx - pointerDown.x;
   const dy = sy - pointerDown.y;
   if (!pointerDown.dragging && Math.hypot(dx, dy) > 4) {
     pointerDown.dragging = true;
+    pointerDown.dragMode = pointerDown.startNodeId ? 'draw' : 'pan';
+    if (pointerDown.dragMode === 'draw') {
+      drawPreview = { startNodeId: pointerDown.startNodeId };
+      // Close any open inspector once an actual draw starts — the start
+      // node is very often already the selected node (e.g. right after
+      // placing it), and leaving its popover open would visually clash with
+      // the live rubber-band preview/numeric entry over the same spot. Every
+      // finishDrawAt(...) outcome re-establishes the right selection
+      // afterward (the newly connected element, or the start node itself if
+      // released back on it), so nothing is lost by clearing it here.
+      state.selection = null;
+    }
   }
-  if (pointerDown.dragging) {
+  if (!pointerDown.dragging) return;
+
+  if (pointerDown.dragMode === 'pan') {
     autoFit = false;
     view.originX = pointerDown.originX + dx;
     view.originY = pointerDown.originY + dy;
     render();
+  } else if (pointerDown.dragMode === 'draw' && !numericEntry) {
+    // While the numeric override is open, freehand mouse movement no longer
+    // drives the preview — it stays frozen at wherever it was when the
+    // override opened, until Escape hands control back (see closeNumericEntry).
+    updateDrawPreview(sx, sy);
+    render();
   }
 }
 
+/** Recompute the live draw-preview endpoint (with angle-snap applied) from
+ * the current cursor screen position. DOM-free math lives in
+ * computeDrawEndpoint; this just wires it to the live start node / view. */
+function updateDrawPreview(sx, sy) {
+  if (!drawPreview) return;
+  const startNode = state.nodes.find((n) => n.id === drawPreview.startNodeId);
+  if (!startNode) return;
+  const world = screenToWorld(view, sx, sy);
+  const result = computeDrawEndpoint(startNode.x, startNode.y, world.x, world.y, snapEnabled);
+  drawPreview.endWorld = { x: result.x, y: result.y };
+  drawPreview.length = result.length;
+  drawPreview.angleDeg = result.angleDeg;
+}
+
+/**
+ * Finish an in-progress "draw" gesture from `startNodeId`. Hit-tests at the
+ * real viewport/client point (hitClientX, hitClientY) to see what's actually
+ * there — deliberately NOT the angle-snapped point: snapping only ever
+ * applies to *where a brand-new node gets created*, never to whether an
+ * existing node counts as "hit". If the release genuinely lands on an
+ * existing node other than the start node, connect to it, full stop — a
+ * point that already exists needs no snapping. If it resolves back onto the
+ * start node itself, just select it (no degenerate zero-length element).
+ * Otherwise (empty canvas, or an element rather than a node under the
+ * point) create a brand-new node at world point (newNodeWorldX,
+ * newNodeWorldY) — which the caller may have angle-snapped — and connect to
+ * that. Shared by the mouse-release path (onPointerUp, where the hit point
+ * is the real release position and the new-node point is the live preview's
+ * possibly-snapped endpoint — two different points) and the numeric-entry
+ * commit path (where both happen to be the same exact typed point) so the
+ * two can never disagree about what "finishing a draw" means.
+ */
+function finishDrawAt(startNodeId, hitClientX, hitClientY, newNodeWorldX, newNodeWorldY) {
+  const { nodeTarget } = hitTestAt(hitClientX, hitClientY);
+  const hitNodeId = nodeTarget ? nodeTarget.getAttribute('data-node-id') : null;
+
+  if (hitNodeId === startNodeId) {
+    // Released back on the start node itself: essentially no real drag —
+    // treat it as a plain click/select, not a zero-length element.
+    state.selection = { kind: 'node', id: startNodeId };
+    return;
+  }
+  if (hitNodeId) {
+    createElementBetween(startNodeId, hitNodeId);
+    return;
+  }
+  const id = nextNodeId(state);
+  state.nodes.push({ id, x: round3(newNodeWorldX), y: round3(newNodeWorldY) });
+  state.nextNodeNum += 1;
+  createElementBetween(startNodeId, id);
+}
+
 function onPointerUp(evt) {
+  closeNumericEntry();
   if (!pointerDown) return;
   const wasDrag = pointerDown.dragging;
+  const dragMode = pointerDown.dragMode;
+  const startNodeId = pointerDown.startNodeId;
   const rect = refs.svg.getBoundingClientRect();
   const sx = evt.clientX - rect.left;
   const sy = evt.clientY - rect.top;
   pointerDown = null;
-  if (wasDrag) return; // it was a pan, not a click
+
+  if (wasDrag && dragMode === 'pan') return; // it was a pan, not a click
+
+  if (wasDrag && dragMode === 'draw') {
+    // Hit-test at the REAL release position (evt.clientX/clientY) — so
+    // releasing squarely on an existing node always connects to it, snap or
+    // no snap. Only if that comes up empty do we fall back to creating a
+    // brand-new node, and only THEN does the (possibly angle-snapped) preview
+    // endpoint matter — that's what the user was watching while dragging, so
+    // honoring its snap there means the new node lands exactly where the
+    // dashed rubber-band said it would.
+    const endWorld = drawPreview && drawPreview.endWorld ? drawPreview.endWorld : screenToWorld(view, sx, sy);
+    drawPreview = null;
+    finishDrawAt(startNodeId, evt.clientX, evt.clientY, endWorld.x, endWorld.y);
+    render();
+    notifyChange();
+    return;
+  }
+  drawPreview = null; // safety net; should already be null on every other path
 
   // NOTE: deliberately NOT using evt.target here. onPointerDown calls
   // setPointerCapture on the svg so drag-to-pan keeps receiving move/up
@@ -459,9 +731,7 @@ function onPointerUp(evt) {
   // never match any node/element (svg has no data-node-id ancestor), making
   // every click fall through to "empty canvas". elementFromPoint gives the
   // real hit-tested element regardless of capture.
-  const hit = document.elementFromPoint(evt.clientX, evt.clientY);
-  const nodeTarget = hit && hit.closest && hit.closest('[data-node-id]');
-  const elTarget = !nodeTarget && hit && hit.closest && hit.closest('[data-element-id]');
+  const { nodeTarget, elTarget } = hitTestAt(evt.clientX, evt.clientY);
 
   if (nodeTarget) {
     handleNodeClick(nodeTarget.getAttribute('data-node-id'));
@@ -507,6 +777,107 @@ function handleElementClick(elId) {
   state.selection = { kind: 'element', id: elId };
 }
 
+// ---- numeric length/angle override, while draw-dragging --------------------
+//
+// A small floating text-input pair (length, then Tab to angle) that lets a
+// user type an exact segment instead of relying on the mouse. Opened by a
+// digit/./- keypress while mid draw-drag (see onKeyDown); Enter from either
+// field commits via the same finishDrawAt(...) the mouse-release path uses,
+// so numeric entry and freehand dragging can never disagree about what
+// "finishing a draw" means. Escape closes just this overlay — the draw
+// itself (drawPreview, pointerDown) is untouched, so the user drops right
+// back into freehand dragging.
+
+function openNumericEntry(firstChar) {
+  if (!pointerDown || pointerDown.dragMode !== 'draw' || !drawPreview) return;
+  closeNumericEntry(); // safety: never stack two overlays
+
+  const lengthInput = document.createElement('input');
+  lengthInput.type = 'text';
+  lengthInput.inputMode = 'decimal';
+  lengthInput.className = 'fea-numeric-entry fea-numeric-length';
+  lengthInput.setAttribute('aria-label', 'Length (m)');
+  lengthInput.value = firstChar;
+
+  const angleInput = document.createElement('input');
+  angleInput.type = 'text';
+  angleInput.inputMode = 'decimal';
+  angleInput.className = 'fea-numeric-entry fea-numeric-angle';
+  angleInput.setAttribute('aria-label', 'Angle (deg)');
+  angleInput.placeholder = drawPreview.angleDeg !== undefined ? drawPreview.angleDeg.toFixed(1) : '0';
+
+  refs.canvasWrap.appendChild(lengthInput);
+  refs.canvasWrap.appendChild(angleInput);
+  numericEntry = { lengthInput, angleInput };
+  positionNumericEntry();
+
+  const commit = () => {
+    const lenStr = lengthInput.value.trim();
+    const angleStr = angleInput.value.trim();
+    const length = lenStr === '' ? drawPreview?.length : parseFloat(lenStr);
+    const angleDeg = angleStr === '' ? drawPreview?.angleDeg : parseFloat(angleStr);
+    const startNodeId = drawPreview?.startNodeId;
+    if (!Number.isFinite(length) || !Number.isFinite(angleDeg) || !startNodeId) return;
+    const startNode = state.nodes.find((n) => n.id === startNodeId);
+    if (!startNode) { closeNumericEntry(); return; }
+    const pt = pointFromLengthAngle(startNode.x, startNode.y, length, angleDeg);
+    // Hit-test at the exact typed point converted to a client coordinate —
+    // for numeric entry there's no separate "raw release position" the way
+    // the mouse path has one; the typed length/angle IS the intentional
+    // point, so it's used for both the hit-test and the new-node fallback.
+    const screenPt = worldToScreen(view, pt.x, pt.y);
+    const { clientX, clientY } = screenToClient(screenPt.x, screenPt.y);
+    closeNumericEntry();
+    drawPreview = null;
+    pointerDown = null;
+    finishDrawAt(startNodeId, clientX, clientY, pt.x, pt.y);
+    render();
+    notifyChange();
+  };
+
+  const onFieldKeydown = (evt) => {
+    if (evt.key === 'Enter') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      commit();
+    } else if (evt.key === 'Tab') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (evt.target === lengthInput) { angleInput.focus(); angleInput.select(); }
+      else { lengthInput.focus(); lengthInput.select(); }
+    } else if (evt.key === 'Escape') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      closeNumericEntry(); // returns to normal freehand dragging; the draw itself is not cancelled
+    }
+  };
+  lengthInput.addEventListener('keydown', onFieldKeydown);
+  angleInput.addEventListener('keydown', onFieldKeydown);
+
+  lengthInput.focus();
+  const caret = lengthInput.value.length;
+  lengthInput.setSelectionRange(caret, caret);
+}
+
+function positionNumericEntry() {
+  if (!numericEntry || !drawPreview || !drawPreview.endWorld) return;
+  const p1 = worldToScreen(view, drawPreview.endWorld.x, drawPreview.endWorld.y);
+  const wrapRect = refs.canvasWrap.getBoundingClientRect();
+  const left = Math.min(Math.max(p1.x + 14, 4), Math.max(wrapRect.width - 120, 4));
+  const top = Math.min(Math.max(p1.y + 14, 4), Math.max(wrapRect.height - 64, 4));
+  numericEntry.lengthInput.style.left = `${left}px`;
+  numericEntry.lengthInput.style.top = `${top}px`;
+  numericEntry.angleInput.style.left = `${left}px`;
+  numericEntry.angleInput.style.top = `${top + 26}px`;
+}
+
+function closeNumericEntry() {
+  if (!numericEntry) return;
+  numericEntry.lengthInput.remove();
+  numericEntry.angleInput.remove();
+  numericEntry = null;
+}
+
 function onWheel(evt) {
   evt.preventDefault();
   const rect = refs.svg.getBoundingClientRect();
@@ -538,6 +909,17 @@ function zoomBy(factor) {
 function onKeyDown(evt) {
   const active = document.activeElement;
   const typing = active && ['INPUT', 'SELECT', 'TEXTAREA'].includes(active.tagName);
+
+  // Numeric length/angle override: only triggers mid draw-drag, and only
+  // from a bare digit/./- keypress while focus isn't already in some other
+  // field (the numeric overlay's own inputs count as "typing" too, so once
+  // it's open this branch correctly stays out of its way).
+  if (!typing && pointerDown && pointerDown.dragMode === 'draw' && !numericEntry && /^[0-9.-]$/.test(evt.key)) {
+    evt.preventDefault();
+    openNumericEntry(evt.key);
+    return;
+  }
+
   if ((evt.key === 'Delete' || evt.key === 'Backspace') && !typing) {
     evt.preventDefault();
     deleteSelected();
@@ -558,13 +940,53 @@ function labeledInput(labelText, inputEl) {
   return wrap;
 }
 
+/**
+ * Shared numeric field used throughout the inspector popover. Every field
+ * gets the same three affordances, added here once rather than per call
+ * site: Enter confirms and moves focus away (the value is already live via
+ * 'input', same as before); Escape reverts both the field's display AND the
+ * underlying state to whatever it was when the field gained focus, then also
+ * moves focus away; and blur (however focus left — click-away, Enter, or
+ * Escape) triggers one full render() to resync the rest of the UI. That's
+ * the "final sync" moment that replaces the old always-on-every-keystroke
+ * popover rebuild: it now happens once per edit instead of once per
+ * character, which is what was previously stealing focus from these fields
+ * (see renderCanvas() above).
+ */
 function numberInput(value, onInput, opts = {}) {
   const inp = document.createElement('input');
   inp.type = 'number';
   if (opts.step !== undefined) inp.step = opts.step;
   else inp.step = 'any';
   inp.value = value;
+
+  let valueOnFocus = value;
+  inp.addEventListener('focus', () => {
+    valueOnFocus = inp.value;
+  });
   inp.addEventListener('input', () => onInput(parseFloat(inp.value) || 0));
+  inp.addEventListener('keydown', (evt) => {
+    if (evt.key === 'Enter') {
+      evt.preventDefault();
+      inp.blur();
+    } else if (evt.key === 'Escape') {
+      evt.preventDefault();
+      // Must stop this from reaching the document-level keydown handler:
+      // that handler's own Escape branch (closeInspector) isn't guarded by
+      // its "typing" check the way Delete/Backspace are, so without this an
+      // Escape meant to cancel just this field's edit would also deselect
+      // and close the whole popover — a much bigger action than "cancel
+      // this edit." Mirrors the identical stopPropagation()-on-Escape
+      // already used by the draw-mode numeric-entry overlay.
+      evt.stopPropagation();
+      inp.value = valueOnFocus;
+      onInput(parseFloat(inp.value) || 0);
+      inp.blur();
+    }
+  });
+  inp.addEventListener('blur', () => {
+    render();
+  });
   return inp;
 }
 
@@ -572,9 +994,34 @@ function clearChildren(el) {
   while (el.firstChild) el.removeChild(el.firstChild);
 }
 
+// The popover normally re-anchors itself next to the current selection on
+// every render (see positionPopover) — but a user can drag its grip handle
+// (see .fea-pop-grip) to move it out of the way (e.g. off of the node/
+// element it's obscuring), and that manual placement must survive further
+// edits in the same popover (like the new Length/Angle fields below, which
+// move a node and would otherwise drag the anchor — and the popover — right
+// along with it). manualPopoverPos holds that override; it's cleared
+// whenever the selection changes to a different node/element (or to
+// nothing), so a fresh selection always starts from a fresh auto-anchored
+// position.
+let manualPopoverPos = null; // { left, top } in canvas-wrap-relative px, or null to auto-anchor
+let lastSelectionKey = null;
+let popoverDrag = null; // { dx, dy } pointer offset from the popover's top-left, while dragging its grip handle
+
+function selectionKey() {
+  return state.selection ? `${state.selection.kind}:${state.selection.id}` : null;
+}
+
 function renderInspector() {
   const pop = refs.popover;
   clearChildren(pop);
+
+  const key = selectionKey();
+  if (key !== lastSelectionKey) {
+    manualPopoverPos = null;
+    lastSelectionKey = key;
+  }
+
   if (!state.selection) {
     pop.hidden = true;
     return;
@@ -593,9 +1040,46 @@ function closeInspector() {
   render();
 }
 
+function onPopoverPointerDown(evt) {
+  if (evt.button !== undefined && evt.button !== 0) return;
+  const handle = evt.target.closest && evt.target.closest('.fea-pop-grip');
+  if (!handle) return;
+  const popRect = refs.popover.getBoundingClientRect();
+  popoverDrag = { dx: evt.clientX - popRect.left, dy: evt.clientY - popRect.top };
+  refs.popover.setPointerCapture?.(evt.pointerId);
+  evt.preventDefault();
+}
+
+function onPopoverPointerMove(evt) {
+  if (!popoverDrag) return;
+  const wrapRect = refs.canvasWrap.getBoundingClientRect();
+  const popW = refs.popover.offsetWidth || 220;
+  const popH = refs.popover.offsetHeight || 120;
+  let left = evt.clientX - wrapRect.left - popoverDrag.dx;
+  let top = evt.clientY - wrapRect.top - popoverDrag.dy;
+  left = Math.min(Math.max(left, 4), Math.max(wrapRect.width - popW - 4, 4));
+  top = Math.min(Math.max(top, 4), Math.max(wrapRect.height - popH - 4, 4));
+  manualPopoverPos = { left, top };
+  refs.popover.style.left = `${left}px`;
+  refs.popover.style.top = `${top}px`;
+}
+
+function onPopoverPointerUp() {
+  popoverDrag = null;
+}
+
 function buildPopoverTitle(text) {
   const title = document.createElement('div');
   title.className = 'fea-pop-title';
+  // Small dedicated drag handle — deliberately NOT the whole title bar (see
+  // the .fea-pop-title CSS comment): keeping the draggable, pointer-events
+  // hit area small and out of the way minimizes the chance it ever sits on
+  // top of a node/element a user wants to click next.
+  const grip = document.createElement('span');
+  grip.className = 'fea-pop-grip';
+  grip.setAttribute('aria-hidden', 'true');
+  grip.title = 'Drag to move';
+  title.appendChild(grip);
   const span = document.createElement('span');
   span.textContent = text;
   title.appendChild(span);
@@ -620,10 +1104,10 @@ function buildNodeInspector(pop, nodeId) {
   const coordRow = document.createElement('div');
   coordRow.className = 'fea-row';
   coordRow.appendChild(labeledInput('x (m)', numberInput(node.x, (v) => {
-    node.x = v; render(); notifyChange();
+    node.x = v; renderCanvas(); notifyChange();
   })));
   coordRow.appendChild(labeledInput('y (m)', numberInput(node.y, (v) => {
-    node.y = v; render(); notifyChange();
+    node.y = v; renderCanvas(); notifyChange();
   })));
   pop.appendChild(coordRow);
 
@@ -674,7 +1158,7 @@ function buildNodeInspector(pop, nodeId) {
     l[key] = v;
     if (l.fx === 0 && l.fy === 0 && l.mz === 0) delete state.nodalLoads[nodeId];
     else state.nodalLoads[nodeId] = l;
-    render();
+    renderCanvas();
     notifyChange();
   };
   loadRow.appendChild(labeledInput('fx (N)', numberInput(existingLoad.fx, (v) => setLoad('fx', v))));
@@ -698,6 +1182,35 @@ function buildElementInspector(pop, elId) {
     return;
   }
   pop.appendChild(buildPopoverTitle(`Element ${elId} (${elData.nodeI} → ${elData.nodeJ})`));
+
+  // Length/Angle: derived from nodeI/nodeJ, editable in either direction.
+  // nodeI's position is always the fixed pivot — editing either field only
+  // ever moves nodeJ to match, the same "set exact geometry after the fact"
+  // idea as the numeric entry available while first drawing the element,
+  // just usable any time after too.
+  const ni = state.nodes.find((n) => n.id === elData.nodeI);
+  const nj = state.nodes.find((n) => n.id === elData.nodeJ);
+  if (ni && nj) {
+    const geomRow = document.createElement('div');
+    geomRow.className = 'fea-row';
+    const curLength = segmentLength(ni.x, ni.y, nj.x, nj.y);
+    const curAngle = angleDegrees(ni.x, ni.y, nj.x, nj.y);
+    geomRow.appendChild(labeledInput('Length (m)', numberInput(round3(curLength), (v) => {
+      const angleNow = angleDegrees(ni.x, ni.y, nj.x, nj.y);
+      const pt = pointFromLengthAngle(ni.x, ni.y, v, angleNow);
+      nj.x = pt.x; nj.y = pt.y;
+      renderCanvas();
+      notifyChange();
+    })));
+    geomRow.appendChild(labeledInput('Angle (°)', numberInput(round3(curAngle), (v) => {
+      const lengthNow = segmentLength(ni.x, ni.y, nj.x, nj.y);
+      const pt = pointFromLengthAngle(ni.x, ni.y, lengthNow, v);
+      nj.x = pt.x; nj.y = pt.y;
+      renderCanvas();
+      notifyChange();
+    })));
+    pop.appendChild(geomRow);
+  }
 
   const typeRow = document.createElement('div');
   typeRow.className = 'fea-row';
@@ -749,7 +1262,7 @@ function buildElementInspector(pop, elId) {
     wyRow.appendChild(labeledInput('wy (N/m)', numberInput(existingWy, (v) => {
       if (v === 0) delete state.distributedLoads[elId];
       else state.distributedLoads[elId] = { wy: v };
-      render();
+      renderCanvas();
       notifyChange();
     })));
     distSection.appendChild(wyRow);
@@ -776,6 +1289,21 @@ function deleteButton(onClick, text) {
 function positionPopover() {
   if (!state.selection) return;
   const pop = refs.popover;
+
+  if (manualPopoverPos) {
+    // User dragged this popover to a specific spot for the current
+    // selection — keep it there (re-clamped in case the wrap was resized)
+    // instead of re-anchoring next to the node/element on every render.
+    const wrapRect = refs.canvasWrap.getBoundingClientRect();
+    const popW = pop.offsetWidth || 220;
+    const popH = pop.offsetHeight || 120;
+    const left = Math.min(Math.max(manualPopoverPos.left, 4), Math.max(wrapRect.width - popW - 4, 4));
+    const top = Math.min(Math.max(manualPopoverPos.top, 4), Math.max(wrapRect.height - popH - 4, 4));
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    return;
+  }
+
   let anchor;
   if (state.selection.kind === 'node') {
     const node = state.nodes.find((n) => n.id === state.selection.id);
@@ -803,8 +1331,26 @@ function positionPopover() {
 }
 
 // ---- main render --------------------------------------------------------
+//
+// render() is a full rebuild: the SVG drawing AND the inspector popover's DOM
+// (renderInspector() clears and rebuilds it — see there). That popover
+// rebuild is exactly what must NOT happen on every keystroke of a text
+// field, or focus gets dropped from the freshly-recreated <input> after every
+// character (the bug this split fixes). renderCanvas() is the SVG-only half,
+// safe to call from a field's live 'input' handler: it redraws the geometry
+// (so a node visibly moves as you type its x) and repositions the popover
+// via positionPopover() (CSS left/top only, never clearChildren, so it can't
+// cost focus either) without touching the popover's contents. Everywhere
+// else that doesn't have a focused text field to protect (delete, add-node,
+// connect, draw-to-create, resetCanvas, a support-radio or type-select
+// change, window resize) keeps calling the full render() as before.
 
 function render() {
+  renderCanvas();
+  renderInspector();
+}
+
+function renderCanvas() {
   if (!refs) return;
   const { svg, content } = refs;
   const { w, h } = svgSize();
@@ -816,6 +1362,7 @@ function render() {
   clearChildren(content);
 
   drawAxes(content, w, h);
+  drawOriginMarker(content, view, w, h);
 
   // elements (under nodes)
   for (const e of state.elements) {
@@ -843,9 +1390,48 @@ function render() {
   for (const n of state.nodes) {
     drawNode(content, n);
   }
+  // live draw-drag rubber-band preview (topmost — it's the active interaction)
+  drawDrawPreview(content);
+  // fixed screen-space axis gizmo, always on top, drawn last
+  drawAxisLegend(content, w, h);
 
   updateToolbarUI();
-  renderInspector();
+  if (state.selection) positionPopover();
+}
+
+function drawDrawPreview(content) {
+  if (!drawPreview || !drawPreview.endWorld) return;
+  const startNode = state.nodes.find((n) => n.id === drawPreview.startNodeId);
+  if (!startNode) return;
+  const p0 = worldToScreen(view, startNode.x, startNode.y);
+  const p1 = worldToScreen(view, drawPreview.endWorld.x, drawPreview.endWorld.y);
+  // pointer-events:none is load-bearing, not cosmetic: this preview's own
+  // endpoint marker is drawn exactly where the cursor currently is — i.e.
+  // exactly where a release is about to be hit-tested. Without this, the
+  // marker would shadow whatever real node/element is underneath it at the
+  // moment of release (document.elementFromPoint finds the topmost painted
+  // element), making it impossible to ever drop back onto an existing node.
+  const g = createSvgEl('g', { class: 'draw-preview', 'pointer-events': 'none' });
+  g.appendChild(createSvgEl('line', {
+    x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y,
+    stroke: '#0f766e', 'stroke-width': 2, 'stroke-dasharray': '6,4',
+  }));
+  g.appendChild(createSvgEl('circle', {
+    cx: p1.x, cy: p1.y, r: 5, fill: '#ffffff', stroke: '#0f766e', 'stroke-width': 2,
+  }));
+
+  const text = `L: ${formatLabel(drawPreview.length)} m, θ: ${drawPreview.angleDeg.toFixed(1)}°`;
+  const lx = p1.x + 12;
+  const ly = p1.y - 12;
+  const approxW = text.length * 6.4 + 10;
+  g.appendChild(createSvgEl('rect', {
+    x: lx - 5, y: ly - 13, width: approxW, height: 18, rx: 3,
+    fill: '#ffffff', stroke: '#0f766e', 'stroke-width': 1, opacity: 0.92,
+  }));
+  const t = createSvgEl('text', { x: lx, y: ly, 'font-size': 12, 'font-family': 'monospace', fill: '#0f766e' });
+  t.textContent = text;
+  g.appendChild(t);
+  content.appendChild(g);
 }
 
 function drawAxes(content, w, h) {
@@ -960,12 +1546,23 @@ function updateToolbarUI() {
       : 'Connect Mode: OFF';
     refs.connectToggleBtn.classList.toggle('active', state.connectMode);
   }
+  if (refs.snapToggleBtn) {
+    refs.snapToggleBtn.setAttribute('aria-pressed', String(snapEnabled));
+    refs.snapToggleBtn.textContent = snapEnabled ? 'Snap: ON' : 'Snap: OFF';
+    refs.snapToggleBtn.classList.toggle('active', snapEnabled);
+  }
   if (refs.hintEl) {
-    refs.hintEl.textContent = state.connectMode
-      ? (state.connectPending
+    if (pointerDown && pointerDown.dragMode === 'draw' && drawPreview) {
+      refs.hintEl.textContent = numericEntry
+        ? 'Enter length, Tab for angle, Enter to commit (Esc cancels numeric entry).'
+        : `Drawing from ${drawPreview.startNodeId} — drop on a node to connect, empty space for a new node.`;
+    } else if (state.connectMode) {
+      refs.hintEl.textContent = state.connectPending
         ? `Click a second node to connect to ${state.connectPending} (Esc to cancel).`
-        : 'Connect mode: click a node to start an element.')
-      : 'Click empty canvas to add a node. Click a node or element to edit it. Delete key removes the selection.';
+        : 'Connect mode: click a node to start an element.';
+    } else {
+      refs.hintEl.textContent = 'Click empty canvas for a node, or drag from a node to draw an element. Delete key removes the selection.';
+    }
   }
 }
 
@@ -979,9 +1576,11 @@ function updateToolbarUI() {
  *   svg,             SVG root element (required)
  *   canvasWrap,      relatively-positioned wrapper containing svg + popover (required)
  *   popover,         floating inspector panel element (required)
- *   connectToggleBtn, fitViewBtn, clearBtn  buttons (optional)
+ *   connectToggleBtn, snapToggleBtn, fitViewBtn, clearBtn  buttons (optional)
  *   hintEl,          status text element (optional)
  *   onChange(model)  callback fired after any state mutation (optional)
+ *   onCursorMove(x, y)  callback fired on every canvas pointer-move with the
+ *                    live world coordinates under the cursor (optional)
  * }
  */
 export function initCanvas(inputRefs) {
@@ -999,11 +1598,25 @@ export function initCanvas(inputRefs) {
   document.addEventListener('keydown', onKeyDown);
   window.addEventListener('resize', () => render());
 
+  // Draggable popover grip handle (see manualPopoverPos above) — listeners
+  // live on the stable refs.popover container, not the grip <span> itself
+  // (which gets torn down and rebuilt by clearChildren on every render), so
+  // an in-progress drag survives any re-render triggered while dragging.
+  refs.popover.addEventListener('pointerdown', onPopoverPointerDown);
+  refs.popover.addEventListener('pointermove', onPopoverPointerMove);
+  refs.popover.addEventListener('pointerup', onPopoverPointerUp);
+
   if (refs.connectToggleBtn) {
     refs.connectToggleBtn.addEventListener('click', () => {
       state.connectMode = !state.connectMode;
       state.connectPending = null;
       render();
+    });
+  }
+  if (refs.snapToggleBtn) {
+    refs.snapToggleBtn.addEventListener('click', () => {
+      snapEnabled = !snapEnabled;
+      updateToolbarUI();
     });
   }
   if (refs.fitViewBtn) {
